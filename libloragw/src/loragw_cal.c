@@ -82,14 +82,14 @@ int sx1302_cal_start(uint8_t version, struct lgw_conf_rxrf_s * rf_chain_cfg, str
     bool cal_status = false;
     uint8_t x_max;
     int x_max_idx;
-    uint8_t dac_gain[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX];
-    uint8_t mix_gain[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX];
-    int8_t offset_i[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX];
-    int8_t offset_q[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX];
-    uint8_t nb_gains[LGW_RF_CHAIN_NB];
+    uint8_t dac_gain[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX] = {0};
+    uint8_t mix_gain[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX] = {0};
+    int8_t offset_i[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX] = {0};
+    int8_t offset_q[LGW_RF_CHAIN_NB][TX_GAIN_LUT_SIZE_MAX] = {0};
+    uint8_t nb_gains[LGW_RF_CHAIN_NB] = {0};
     bool unique_gains;
-    struct lgw_sx125x_cal_rx_result_s cal_rx[CAL_ITER], cal_rx_min, cal_rx_max;
-    struct lgw_sx125x_cal_tx_result_s cal_tx[CAL_ITER], cal_tx_min, cal_tx_max;
+    struct lgw_sx125x_cal_rx_result_s cal_rx[CAL_ITER] = {0}, cal_rx_min, cal_rx_max;
+    struct lgw_sx125x_cal_tx_result_s cal_tx[CAL_ITER] = {0}, cal_tx_min, cal_tx_max;
 
     /* Wait for AGC fw to be started, and VERSION available in mailbox */
     sx1302_agc_wait_status(0x01); /* fw has started, VERSION is ready in mailbox */
