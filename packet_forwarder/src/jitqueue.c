@@ -354,6 +354,33 @@ enum jit_error_e jit_dequeue(struct jit_queue_s *queue, int index, struct lgw_pk
     return JIT_ERROR_OK;
 }
 
+enum jit_error_e jit_copy(struct jit_queue_s *queue, int index, struct lgw_pkt_tx_s *packet, enum jit_pkt_type_e *pkt_type) {
+    if (packet == NULL) {
+        MSG("ERROR: invalid parameter\n");
+        return JIT_ERROR_INVALID;
+    }
+
+    if ((index < 0) || (index >= JIT_QUEUE_MAX)) {
+        MSG("ERROR: invalid parameter\n");
+        return JIT_ERROR_INVALID;
+    }
+
+    if (jit_queue_is_empty(queue)) {
+        MSG("ERROR: cannot dequeue packet, JIT queue is empty\n");
+        return JIT_ERROR_EMPTY;
+    }
+
+    pthread_mutex_lock(&mx_jit_queue);
+
+    memcpy(packet, &(queue->nodes[index].pkt), sizeof(struct lgw_pkt_tx_s));
+    *pkt_type = queue->nodes[index].pkt_type;
+
+    /* Done */
+    pthread_mutex_unlock(&mx_jit_queue);
+
+    return JIT_ERROR_OK;
+}
+
 enum jit_error_e jit_peek(struct jit_queue_s *queue, uint32_t time_us, int *pkt_idx) {
     /* Return index of node containing a packet inline with given time */
     int i = 0;

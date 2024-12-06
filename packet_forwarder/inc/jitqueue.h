@@ -129,6 +129,20 @@ The index is generally got using the jit_peek function.
 enum jit_error_e jit_dequeue(struct jit_queue_s *queue, int index, struct lgw_pkt_tx_s *packet, enum jit_pkt_type_e *pkt_type);
 
 /**
+@brief Copy a packet from a Just-in-Time queue
+
+@param queue[in] Just in Time queue from which the packet should be copied
+@param index[in] in the queue where to get the packet to be copied
+@param packet[out] that was at index
+@param pkt_type[out] Type of packet copied: Downlink, Beacon
+@return success if the function was able to copy the packet
+
+This function is typically used when a packet is about to be placed on concentrator buffer for TX.
+The index is generally got using the jit_peek function.
+*/
+enum jit_error_e jit_copy(struct jit_queue_s *queue, int index, struct lgw_pkt_tx_s *packet, enum jit_pkt_type_e *pkt_type);
+
+/**
 @brief Check if there is a packet soon to be sent from the JiT queue.
 
 @param queue[in] Just in Time queue to parse for peeking a packet

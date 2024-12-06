@@ -3069,11 +3069,12 @@ void print_tx_status(uint8_t tx_status) {
 void thread_jit(void) {
     int result = LGW_HAL_SUCCESS;
     struct lgw_pkt_tx_s pkt;
-    int pkt_index = -1;
+    int pkt_index;
     uint32_t current_concentrator_time;
     enum jit_error_e jit_result;
     enum jit_pkt_type_e pkt_type;
     uint8_t tx_status;
+    uint32_t toa_ms;
     int i;
 
     while (!exit_sig && !quit_sig) {
@@ -3084,10 +3085,11 @@ void thread_jit(void) {
             pthread_mutex_lock(&mx_concent);
             lgw_get_instcnt(&current_concentrator_time);
             pthread_mutex_unlock(&mx_concent);
+            pkt_index = -1;
             jit_result = jit_peek(&jit_queue[i], current_concentrator_time, &pkt_index);
             if (jit_result == JIT_ERROR_OK) {
                 if (pkt_index > -1) {
-                    jit_result = jit_dequeue(&jit_queue[i], pkt_index, &pkt, &pkt_type);
+                    jit_result = jit_copy(&jit_queue[i], pkt_index, &pkt, &pkt_type);
                     if (jit_result == JIT_ERROR_OK) {
                         /* update beacon stats */
                         if (pkt_type == JIT_PKT_TYPE_BEACON) {
@@ -3123,6 +3125,7 @@ void thread_jit(void) {
                             }
                         }
 
+                        toa_ms = lgw_time_on_air(&pkt);
                         /* send packet to concentrator */
                         pthread_mutex_lock(&mx_concent); /* may have to wait for a fetch to finish */
                         result = lgw_send(&pkt);
@@ -3137,10 +3140,12 @@ void thread_jit(void) {
                             pthread_mutex_lock(&mx_meas_dw);
                             meas_nb_tx_ok += 1;
                             pthread_mutex_unlock(&mx_meas_dw);
-                            MSG_DEBUG(DEBUG_PKT_FWD, "lgw_send done on rf_chain %d: count_us=%u\n", i, pkt.count_us);
+                            MSG_DEBUG(DEBUG_PKT_FWD, "lgw_send done on rf_chain %d: count_us=%u toa_ms=%u\n", i, pkt.count_us, toa_ms);
                         }
+                        wait_ms(toa_ms);
+                        jit_result = jit_dequeue(&jit_queue[i], pkt_index, &pkt, &pkt_type);
                     } else {
-                        MSG("ERROR: jit_dequeue failed on rf_chain %d with %d\n", i, jit_result);
+                        MSG("ERROR: jit_copy failed on rf_chain %d with %d\n", i, jit_result);
                     }
                 }
             } else if (jit_result == JIT_ERROR_EMPTY) {
