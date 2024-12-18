@@ -53,7 +53,6 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #include "loragw_hal.h"
 #include "loragw_aux.h"
 #include "loragw_reg.h"
-#include "loragw_gps.h"
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE MACROS ------------------------------------------------------- */
@@ -80,14 +79,10 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define DEFAULT_STAT        30          /* default time interval for statistics */
 #define PUSH_TIMEOUT_MS     100
 #define PULL_TIMEOUT_MS     200
-#define GPS_REF_MAX_AGE     30          /* maximum admitted delay in seconds of GPS loss before considering latest GPS sync unusable */
 #define FETCH_SLEEP_MS      10          /* nb of ms waited when a fetch return no packets */
 
 #define PROTOCOL_VERSION    2           /* v1.6 */
 #define PROTOCOL_JSON_RXPK_FRAME_FORMAT 1
-
-#define XERR_INIT_AVG       16          /* nb of measurements the XTAL correction is averaged on as initial value */
-#define XERR_FILT_COEF      256         /* coefficient for low-pass XTAL error tracking */
 
 #define PKT_PUSH_DATA   0
 #define PKT_PUSH_ACK    1
@@ -103,12 +98,8 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define MIN_FSK_PREAMB  3 /* minimum FSK preamble length for this application */
 #define STD_FSK_PREAMB  5
 
-#define STATUS_SIZE     200
-#define TX_BUFF_SIZE    ((540 * NB_PKT_MAX) + 30 + STATUS_SIZE)
+#define TX_BUFF_SIZE    ((540 * NB_PKT_MAX) + 30)
 #define ACK_BUFF_SIZE   64
-
-#define UNIX_GPS_EPOCH_OFFSET 315964800 /* Number of seconds ellapsed between 01.Jan.1970 00:00:00
-                                                                          and 06.Jan.1980 00:00:00 */
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE TYPES -------------------------------------------------------- */
@@ -132,9 +123,6 @@ static char serv_port_up[8] = STR(DEFAULT_PORT_UP); /* server port for upstream 
 static char serv_port_down[8] = STR(DEFAULT_PORT_DW); /* server port for downstream traffic */
 static int keepalive_time = DEFAULT_KEEPALIVE; /* send a PULL_DATA request every X seconds, negative = disabled */
 
-/* statistics collection configuration variables */
-static unsigned stat_interval = DEFAULT_STAT; /* time interval (in sec) at which statistics are collected and displayed */
-
 /* gateway <-> MAC protocol variables */
 static uint32_t net_mac_h; /* Most Significant Nibble, network order */
 static uint32_t net_mac_l; /* Least Significant Nibble, network order */
@@ -149,35 +137,6 @@ static struct timeval pull_timeout = {0, (PULL_TIMEOUT_MS * 1000)}; /* non criti
 
 /* hardware access control and correction */
 pthread_mutex_t mx_concent = PTHREAD_MUTEX_INITIALIZER; /* control access to the concentrator */
-
-/* measurements to establish statistics */
-static pthread_mutex_t mx_meas_up = PTHREAD_MUTEX_INITIALIZER; /* control access to the upstream measurements */
-static uint32_t meas_nb_rx_rcv = 0; /* count packets received */
-static uint32_t meas_nb_rx_ok = 0; /* count packets received with PAYLOAD CRC OK */
-static uint32_t meas_nb_rx_bad = 0; /* count packets received with PAYLOAD CRC ERROR */
-static uint32_t meas_nb_rx_nocrc = 0; /* count packets received with NO PAYLOAD CRC */
-static uint32_t meas_up_pkt_fwd = 0; /* number of radio packet forwarded to the server */
-static uint32_t meas_up_network_byte = 0; /* sum of UDP bytes sent for upstream traffic */
-static uint32_t meas_up_payload_byte = 0; /* sum of radio payload bytes sent for upstream traffic */
-static uint32_t meas_up_dgram_sent = 0; /* number of datagrams sent for upstream traffic */
-static uint32_t meas_up_ack_rcv = 0; /* number of datagrams acknowledged for upstream traffic */
-
-static pthread_mutex_t mx_meas_dw = PTHREAD_MUTEX_INITIALIZER; /* control access to the downstream measurements */
-static uint32_t meas_dw_pull_sent = 0; /* number of PULL requests sent for downstream traffic */
-static uint32_t meas_dw_ack_rcv = 0; /* number of PULL requests acknowledged for downstream traffic */
-static uint32_t meas_dw_dgram_rcv = 0; /* count PULL response packets received for downstream traffic */
-static uint32_t meas_dw_network_byte = 0; /* sum of UDP bytes sent for upstream traffic */
-static uint32_t meas_dw_payload_byte = 0; /* sum of radio payload bytes sent for upstream traffic */
-static uint32_t meas_nb_tx_ok = 0; /* count packets emitted successfully */
-static uint32_t meas_nb_tx_fail = 0; /* count packets were TX failed for other reasons */
-static uint32_t meas_nb_tx_requested = 0; /* count TX request from server (downlinks) */
-static uint32_t meas_nb_tx_rejected_collision_packet = 0; /* count packets were TX request were rejected due to collision with another packet already programmed */
-static uint32_t meas_nb_tx_rejected_too_late = 0; /* count packets were TX request were rejected because it is too late to program it */
-static uint32_t meas_nb_tx_rejected_too_early = 0; /* count packets were TX request were rejected because timestamp is too much in advance */
-
-static pthread_mutex_t mx_stat_rep = PTHREAD_MUTEX_INITIALIZER; /* control access to the status report */
-static bool report_ready = false; /* true when there is a new report to send to the server */
-static char status_report[STATUS_SIZE]; /* status report as a JSON object */
 
 /* auto-quit function */
 static uint32_t autoquit_threshold = 0; /* enable auto-quit after a number of non-acknowledged PULL_DATA (0 = disabled)*/
@@ -196,8 +155,6 @@ static uint32_t tx_freq_max[LGW_RF_CHAIN_NB]; /* highest frequency supported by 
 static bool tx_enable[LGW_RF_CHAIN_NB] = {false}; /* Is TX enabled for a given RF chain ? */
 
 static uint32_t nb_pkt_log[LGW_IF_CHAIN_NB][8]; /* [CH][SF] */
-static uint32_t nb_pkt_received_lora = 0;
-static uint32_t nb_pkt_received_fsk = 0;
 
 /* Interface type */
 static lgw_com_type_t com_type = LGW_COM_SPI;
@@ -213,8 +170,6 @@ static int parse_SX130x_configuration(const char * conf_file);
 
 static int parse_gateway_configuration(const char * conf_file, bool file);
 
-static uint16_t crc16(const uint8_t * data, unsigned size);
-
 static double difftimespec(struct timespec end, struct timespec beginning);
 
 static int get_tx_gain_lut_index(uint8_t rf_chain, int8_t rf_power, uint8_t * lut_index);
@@ -223,8 +178,6 @@ static int get_tx_gain_lut_index(uint8_t rf_chain, int8_t rf_power, uint8_t * lu
 void thread_up(void);
 void thread_down(void);
 void thread_jit(void);
-void thread_gps(void);
-void thread_valid(void);
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
@@ -771,13 +724,6 @@ static int parse_gateway_configuration(const char * conf_file, bool file) {
         MSG("INFO: downstream keep-alive interval is configured to %u seconds\n", keepalive_time);
     }
 
-    /* get interval (in seconds) for statistics display (optional) */
-    val = json_object_get_value(conf_obj, "stat_interval");
-    if (val != NULL) {
-        stat_interval = (unsigned)json_value_get_number(val);
-        MSG("INFO: statistics display interval is configured to %u seconds\n", stat_interval);
-    }
-
     /* get time-out value (in ms) for upstream datagrams (optional) */
     val = json_object_get_value(conf_obj, "push_timeout_ms");
     if (val != NULL) {
@@ -805,26 +751,6 @@ static int parse_gateway_configuration(const char * conf_file, bool file) {
     /* free JSON parsing data structure */
     json_value_free(root_val);
     return 0;
-}
-
-static uint16_t crc16(const uint8_t * data, unsigned size) {
-    const uint16_t crc_poly = 0x1021;
-    const uint16_t init_val = 0x0000;
-    uint16_t x = init_val;
-    unsigned i, j;
-
-    if (data == NULL)  {
-        return 0;
-    }
-
-    for (i=0; i<size; ++i) {
-        x ^= (uint16_t)data[i] << 8;
-        for (j=0; j<8; ++j) {
-            x = (x & 0x8000) ? (x<<1) ^ crc_poly : (x<<1);
-        }
-    }
-
-    return x;
 }
 
 static double difftimespec(struct timespec end, struct timespec beginning) {
@@ -875,26 +801,14 @@ static int send_tx_ack(uint8_t token_h, uint8_t token_l, enum jit_error_e error,
             case JIT_ERROR_COLLISION_PACKET:
                 memcpy((void *)(buff_ack + buff_index), (void *)"\"COLLISION_PACKET\"", 18);
                 buff_index += 18;
-                /* update stats */
-                pthread_mutex_lock(&mx_meas_dw);
-                meas_nb_tx_rejected_collision_packet += 1;
-                pthread_mutex_unlock(&mx_meas_dw);
                 break;
             case JIT_ERROR_TOO_LATE:
                 memcpy((void *)(buff_ack + buff_index), (void *)"\"TOO_LATE\"", 10);
                 buff_index += 10;
-                /* update stats */
-                pthread_mutex_lock(&mx_meas_dw);
-                meas_nb_tx_rejected_too_late += 1;
-                pthread_mutex_unlock(&mx_meas_dw);
                 break;
             case JIT_ERROR_TOO_EARLY:
                 memcpy((void *)(buff_ack + buff_index), (void *)"\"TOO_EARLY\"", 11);
                 buff_index += 11;
-                /* update stats */
-                pthread_mutex_lock(&mx_meas_dw);
-                meas_nb_tx_rejected_too_early += 1;
-                pthread_mutex_unlock(&mx_meas_dw);
                 break;
             case JIT_ERROR_COLLISION_BEACON:
                 memcpy((void *)(buff_ack + buff_index), (void *)"\"COLLISION_BEACON\"", 18);
@@ -974,42 +888,10 @@ int main(int argc, char ** argv)
     char host_name[64];
     char port_name[64];
 
-    /* variables to get local copies of measurements */
-    uint32_t cp_nb_rx_rcv;
-    uint32_t cp_nb_rx_ok;
-    uint32_t cp_nb_rx_bad;
-    uint32_t cp_nb_rx_nocrc;
-    uint32_t cp_up_pkt_fwd;
-    uint32_t cp_up_network_byte;
-    uint32_t cp_up_payload_byte;
-    uint32_t cp_up_dgram_sent;
-    uint32_t cp_up_ack_rcv;
-    uint32_t cp_dw_pull_sent;
-    uint32_t cp_dw_ack_rcv;
-    uint32_t cp_dw_dgram_rcv;
-    uint32_t cp_dw_network_byte;
-    uint32_t cp_dw_payload_byte;
-    uint32_t cp_nb_tx_ok;
-    uint32_t cp_nb_tx_fail;
-    uint32_t cp_nb_tx_requested = 0;
-    uint32_t cp_nb_tx_rejected_collision_packet = 0;
-    uint32_t cp_nb_tx_rejected_too_late = 0;
-    uint32_t cp_nb_tx_rejected_too_early = 0;
-
     /* SX1302 data variables */
     uint32_t trig_tstamp;
     uint32_t inst_tstamp;
     uint64_t eui;
-    float temperature = 0;
-
-    /* statistics variable */
-    time_t t;
-    char stat_timestamp[24];
-    float rx_ok_ratio;
-    float rx_bad_ratio;
-    float rx_nocrc_ratio;
-    float up_ack_ratio;
-    float dw_ack_ratio;
 
     /* Parse command line options */
     while( (i = getopt( argc, argv, "hg:c:j:p:f:" )) != -1 )
@@ -1205,7 +1087,7 @@ int main(int argc, char ** argv)
     sigaction(SIGTERM, &sigact, NULL); /* default "kill" command */
 
     /* main loop if no statistics collection */
-    while (!exit_sig && !quit_sig && stat_interval == 0) {
+    while (!exit_sig && !quit_sig) {
         wait_ms(1e3*DEFAULT_STAT);
 
         pthread_mutex_lock(&mx_concent);
@@ -1219,142 +1101,6 @@ int main(int argc, char ** argv)
             quit_sig = true; // quit loop
         }
         prev_inst_tstamp = inst_tstamp;
-    }
-
-    /* main loop task : statistics collection */
-    while (!exit_sig && !quit_sig && stat_interval > 0) {
-        /* wait for next reporting interval */
-        wait_ms(1000 * stat_interval);
-
-        /* get timestamp for statistics */
-        t = time(NULL);
-        strftime(stat_timestamp, sizeof stat_timestamp, "%F %T %Z", gmtime(&t));
-
-        /* access upstream statistics, copy and reset them */
-        pthread_mutex_lock(&mx_meas_up);
-        cp_nb_rx_rcv       = meas_nb_rx_rcv;
-        cp_nb_rx_ok        = meas_nb_rx_ok;
-        cp_nb_rx_bad       = meas_nb_rx_bad;
-        cp_nb_rx_nocrc     = meas_nb_rx_nocrc;
-        cp_up_pkt_fwd      = meas_up_pkt_fwd;
-        cp_up_network_byte = meas_up_network_byte;
-        cp_up_payload_byte = meas_up_payload_byte;
-        cp_up_dgram_sent   = meas_up_dgram_sent;
-        cp_up_ack_rcv      = meas_up_ack_rcv;
-        meas_nb_rx_rcv = 0;
-        meas_nb_rx_ok = 0;
-        meas_nb_rx_bad = 0;
-        meas_nb_rx_nocrc = 0;
-        meas_up_pkt_fwd = 0;
-        meas_up_network_byte = 0;
-        meas_up_payload_byte = 0;
-        meas_up_dgram_sent = 0;
-        meas_up_ack_rcv = 0;
-        pthread_mutex_unlock(&mx_meas_up);
-        if (cp_nb_rx_rcv > 0) {
-            rx_ok_ratio = (float)cp_nb_rx_ok / (float)cp_nb_rx_rcv;
-            rx_bad_ratio = (float)cp_nb_rx_bad / (float)cp_nb_rx_rcv;
-            rx_nocrc_ratio = (float)cp_nb_rx_nocrc / (float)cp_nb_rx_rcv;
-        } else {
-            rx_ok_ratio = 0.0;
-            rx_bad_ratio = 0.0;
-            rx_nocrc_ratio = 0.0;
-        }
-        if (cp_up_dgram_sent > 0) {
-            up_ack_ratio = (float)cp_up_ack_rcv / (float)cp_up_dgram_sent;
-        } else {
-            up_ack_ratio = 0.0;
-        }
-
-        /* access downstream statistics, copy and reset them */
-        pthread_mutex_lock(&mx_meas_dw);
-        cp_dw_pull_sent    =  meas_dw_pull_sent;
-        cp_dw_ack_rcv      =  meas_dw_ack_rcv;
-        cp_dw_dgram_rcv    =  meas_dw_dgram_rcv;
-        cp_dw_network_byte =  meas_dw_network_byte;
-        cp_dw_payload_byte =  meas_dw_payload_byte;
-        cp_nb_tx_ok        =  meas_nb_tx_ok;
-        cp_nb_tx_fail      =  meas_nb_tx_fail;
-        cp_nb_tx_requested                 +=  meas_nb_tx_requested;
-        cp_nb_tx_rejected_collision_packet +=  meas_nb_tx_rejected_collision_packet;
-        cp_nb_tx_rejected_too_late         +=  meas_nb_tx_rejected_too_late;
-        cp_nb_tx_rejected_too_early        +=  meas_nb_tx_rejected_too_early;
-        meas_dw_pull_sent = 0;
-        meas_dw_ack_rcv = 0;
-        meas_dw_dgram_rcv = 0;
-        meas_dw_network_byte = 0;
-        meas_dw_payload_byte = 0;
-        meas_nb_tx_ok = 0;
-        meas_nb_tx_fail = 0;
-        meas_nb_tx_requested = 0;
-        meas_nb_tx_rejected_collision_packet = 0;
-        meas_nb_tx_rejected_too_late = 0;
-        meas_nb_tx_rejected_too_early = 0;
-        pthread_mutex_unlock(&mx_meas_dw);
-        if (cp_dw_pull_sent > 0) {
-            dw_ack_ratio = (float)cp_dw_ack_rcv / (float)cp_dw_pull_sent;
-        } else {
-            dw_ack_ratio = 0.0;
-        }
-
-        /* display a report */
-        printf("\n##### %s #####\n", stat_timestamp);
-        printf("### [UPSTREAM] ###\n");
-        printf("# RF packets received by concentrator: %u\n", cp_nb_rx_rcv);
-        printf("# CRC_OK: %.2f%%, CRC_FAIL: %.2f%%, NO_CRC: %.2f%%\n", 100.0 * rx_ok_ratio, 100.0 * rx_bad_ratio, 100.0 * rx_nocrc_ratio);
-        printf("# RF packets forwarded: %u (%u bytes)\n", cp_up_pkt_fwd, cp_up_payload_byte);
-        printf("# PUSH_DATA datagrams sent: %u (%u bytes)\n", cp_up_dgram_sent, cp_up_network_byte);
-        printf("# PUSH_DATA acknowledged: %.2f%%\n", 100.0 * up_ack_ratio);
-        printf("### [DOWNSTREAM] ###\n");
-        printf("# PULL_DATA sent: %u (%.2f%% acknowledged)\n", cp_dw_pull_sent, 100.0 * dw_ack_ratio);
-        printf("# PULL_RESP(onse) datagrams received: %u (%u bytes)\n", cp_dw_dgram_rcv, cp_dw_network_byte);
-        printf("# RF packets sent to concentrator: %u (%u bytes)\n", (cp_nb_tx_ok+cp_nb_tx_fail), cp_dw_payload_byte);
-        printf("# TX errors: %u\n", cp_nb_tx_fail);
-        if (cp_nb_tx_requested != 0 ) {
-            printf("# TX rejected (collision packet): %.2f%% (req:%u, rej:%u)\n", 100.0 * cp_nb_tx_rejected_collision_packet / cp_nb_tx_requested, cp_nb_tx_requested, cp_nb_tx_rejected_collision_packet);
-            printf("# TX rejected (too late): %.2f%% (req:%u, rej:%u)\n", 100.0 * cp_nb_tx_rejected_too_late / cp_nb_tx_requested, cp_nb_tx_requested, cp_nb_tx_rejected_too_late);
-            printf("# TX rejected (too early): %.2f%% (req:%u, rej:%u)\n", 100.0 * cp_nb_tx_rejected_too_early / cp_nb_tx_requested, cp_nb_tx_requested, cp_nb_tx_rejected_too_early);
-        }
-        printf("### SX1302 Status ###\n");
-        pthread_mutex_lock(&mx_concent);
-        i  = lgw_get_instcnt(&inst_tstamp);
-        i |= lgw_get_trigcnt(&trig_tstamp);
-        pthread_mutex_unlock(&mx_concent);
-        if (i != LGW_HAL_SUCCESS) {
-            printf("# SX1302 counter unknown\n");
-        } else {
-            printf("# SX1302 counter (INST): %u\n", inst_tstamp);
-            printf("# SX1302 counter (PPS):  %u\n", trig_tstamp);
-        }
-        printf("### [JIT] ###\n");
-        /* get timestamp captured on PPM pulse  */
-        jit_print_queue (&jit_queue[0], false, DEBUG_LOG);
-        printf("#--------\n");
-        jit_print_queue (&jit_queue[1], false, DEBUG_LOG);
-
-        /* generate a JSON report (will be sent to server by upstream thread) */
-        pthread_mutex_lock(&mx_stat_rep);
-        {
-            snprintf(status_report, STATUS_SIZE, "\"stat\":{\"time\":\"%s\",\"rxnb\":%u,\"rxok\":%u,\"rxfw\":%u,\"ackr\":%.1f,\"dwnb\":%u,\"txnb\":%u,\"temp\":%.1f}", stat_timestamp, cp_nb_rx_rcv, cp_nb_rx_ok, cp_up_pkt_fwd, 100.0 * up_ack_ratio, cp_dw_dgram_rcv, cp_nb_tx_ok, temperature);
-        }
-        report_ready = true;
-        pthread_mutex_unlock(&mx_stat_rep);
-
-
-        /* If the contcentrator is stuck then the inst_tstamp will not increase anymore... */
-				/* OskDannyn: begin */
-        {
-            static uint32_t prev_inst_tstamp = 0;
-            if ((prev_inst_tstamp!=0) && (inst_tstamp == prev_inst_tstamp)) {
-                MSG("ERROR: 32MHz counter stuck, quit forwarder: %u\n", inst_tstamp );
-                quit_sig = true; // quit loop
-            }
-            else {
-                MSG("ERROR: 32MHz counter still ok: %u\n", inst_tstamp );
-            }
-            prev_inst_tstamp = inst_tstamp;
-        }
-				/* OskDannyn: end. */
     }
 
     /* wait for upstream thread to finish (1 fetch cycle max) */
@@ -1388,8 +1134,6 @@ static uint8_t buff_up[TX_BUFF_SIZE]; /* buffer to compose the upstream packet *
 void thread_up(void) {
     int i, j; /* loop variables */
     unsigned pkt_in_dgram; /* nb on Lora packet in the current datagram */
-    char stat_timestamp[24];
-    time_t t;
 
     /* allocate memory for packet fetching and processing */
     struct lgw_pkt_rx_s rxpkt[NB_PKT_MAX]; /* array containing inbound packets + metadata */
@@ -1407,15 +1151,6 @@ void thread_up(void) {
     /* ping measurement variables */
     struct timespec send_time;
     struct timespec recv_time;
-
-    /* GPS synchronization variables */
-    struct timespec pkt_utc_time;
-    struct tm * x; /* broken-up UTC time */
-    struct timespec pkt_gps_time;
-    uint64_t pkt_gps_time_ms;
-
-    /* report management variable */
-    bool send_report = false;
 
     /* mote info variables */
     uint32_t mote_addr = 0;
@@ -1445,20 +1180,11 @@ void thread_up(void) {
             exit(EXIT_FAILURE);
         }
 
-        /* check if there are status report to send */
-        send_report = report_ready; /* copy the variable so it doesn't change mid-function */
-        /* no mutex, we're only reading */
-
         /* wait a short time if no packets, nor status report */
-        if ((nb_pkt == 0) && (send_report == false)) {
+        if ((nb_pkt == 0)) {
             wait_ms(FETCH_SLEEP_MS);
             continue;
         }
-
-        /* get timestamp for statistics */
-        t = time(NULL);
-        strftime(stat_timestamp, sizeof stat_timestamp, "%F %T %Z", gmtime(&t));
-        MSG_DEBUG(DEBUG_PKT_FWD, "\nCurrent time: %s \n", stat_timestamp);
 
         /* start composing datagram with the header */
         token_h = (uint8_t)rand(); /* random token */
@@ -1492,39 +1218,27 @@ void thread_up(void) {
             }
 
             /* basic packet filtering */
-            pthread_mutex_lock(&mx_meas_up);
-            meas_nb_rx_rcv += 1;
             switch(p->status) {
                 case STAT_CRC_OK:
-                    meas_nb_rx_ok += 1;
                     if (!fwd_valid_pkt) {
-                        pthread_mutex_unlock(&mx_meas_up);
                         continue; /* skip that packet */
                     }
                     break;
                 case STAT_CRC_BAD:
-                    meas_nb_rx_bad += 1;
                     if (!fwd_error_pkt) {
-                        pthread_mutex_unlock(&mx_meas_up);
                         continue; /* skip that packet */
                     }
                     break;
                 case STAT_NO_CRC:
-                    meas_nb_rx_nocrc += 1;
                     if (!fwd_nocrc_pkt) {
-                        pthread_mutex_unlock(&mx_meas_up);
                         continue; /* skip that packet */
                     }
                     break;
                 default:
                     MSG("WARNING: [up] received packet with unknown status %u (size %u, modulation %u, BW %u, DR %u, RSSI %.1f)\n", p->status, p->size, p->modulation, p->bandwidth, p->datarate, p->rssic);
-                    pthread_mutex_unlock(&mx_meas_up);
                     continue; /* skip that packet */
                     // exit(EXIT_FAILURE);
             }
-            meas_up_pkt_fwd += 1;
-            meas_up_payload_byte += p->size;
-            pthread_mutex_unlock(&mx_meas_up);
             printf( "\nINFO: Received pkt from mote: %08X (fcnt=%u)\n", mote_addr, mote_fcnt );
 
             /* Start of packet, add inter-packet separator if necessary */
@@ -1763,36 +1477,12 @@ void thread_up(void) {
 
         /* restart fetch sequence without sending empty JSON if all packets have been filtered out */
         if (pkt_in_dgram == 0) {
-            if (send_report == true) {
-                /* need to clean up the beginning of the payload */
-                buff_index -= 8; /* removes "rxpk":[ */
-            } else {
-                /* all packet have been filtered out and no report, restart loop */
-                continue;
-            }
+            /* all packet have been filtered out and no report, restart loop */
+            continue;
         } else {
             /* end of packet array */
             buff_up[buff_index] = ']';
             ++buff_index;
-            /* add separator if needed */
-            if (send_report == true) {
-                buff_up[buff_index] = ',';
-                ++buff_index;
-            }
-        }
-
-        /* add status report if a new one is available */
-        if (send_report == true) {
-            pthread_mutex_lock(&mx_stat_rep);
-            report_ready = false;
-            j = snprintf((char *)(buff_up + buff_index), TX_BUFF_SIZE-buff_index, "%s", status_report);
-            pthread_mutex_unlock(&mx_stat_rep);
-            if (j > 0) {
-                buff_index += j;
-            } else {
-                MSG("ERROR: [up] snprintf failed line %u\n", (__LINE__ - 5));
-                exit(EXIT_FAILURE);
-            }
         }
 
         /* end of JSON datagram payload */
@@ -1805,9 +1495,6 @@ void thread_up(void) {
         /* send datagram to server */
         send(sock_up, (void *)buff_up, buff_index, 0);
         clock_gettime(CLOCK_MONOTONIC, &send_time);
-        pthread_mutex_lock(&mx_meas_up);
-        meas_up_dgram_sent += 1;
-        meas_up_network_byte += buff_index;
 
         /* wait for acknowledge (in 2 times, to catch extra packets) */
         for (i=0; i<2; ++i) {
@@ -1827,11 +1514,9 @@ void thread_up(void) {
                 continue;
             } else {
                 MSG("INFO: [up] PUSH_ACK received in %i ms\n", (int)(1000 * difftimespec(recv_time, send_time)));
-                meas_up_ack_rcv += 1;
                 break;
             }
         }
-        pthread_mutex_unlock(&mx_meas_up);
     }
     MSG("\nINFO: End of upstream thread\n");
 }
@@ -1905,8 +1590,6 @@ void thread_down(void) {
     JSON_Value *val = NULL; /* needed to detect the absence of some fields */
     const char *str; /* pointer to sub-strings in the JSON data */
     short x0, x1;
-    uint64_t x2;
-    double x3, x4;
 
     /* auto-quit variable */
     uint32_t autoquit_cnt = 0; /* count the number of PULL_DATA sent since the latest PULL_ACK */
@@ -1954,9 +1637,6 @@ void thread_down(void) {
         /* send PULL request and record time */
         send(sock_down, (void *)buff_req, sizeof buff_req, 0);
         clock_gettime(CLOCK_MONOTONIC, &send_time);
-        pthread_mutex_lock(&mx_meas_dw);
-        meas_dw_pull_sent += 1;
-        pthread_mutex_unlock(&mx_meas_dw);
         req_ack = false;
         autoquit_cnt++;
 
@@ -1989,9 +1669,6 @@ void thread_down(void) {
                     } else { /* if that packet was not already acknowledged */
                         req_ack = true;
                         autoquit_cnt = 0;
-                        pthread_mutex_lock(&mx_meas_dw);
-                        meas_dw_ack_rcv += 1;
-                        pthread_mutex_unlock(&mx_meas_dw);
                         MSG("INFO: [down] PULL_ACK received in %i ms\n", (int)(1000 * difftimespec(recv_time, send_time)));
                     }
                 } else { /* out-of-sync token */
@@ -2255,13 +1932,6 @@ void thread_down(void) {
                 txpkt.tx_mode = TIMESTAMPED;
             }
 
-            /* record measurement data */
-            pthread_mutex_lock(&mx_meas_dw);
-            meas_dw_dgram_rcv += 1; /* count only datagrams with no JSON errors */
-            meas_dw_network_byte += msg_len; /* meas_dw_network_byte */
-            meas_dw_payload_byte += txpkt.size;
-            pthread_mutex_unlock(&mx_meas_dw);
-
             /* reset error/warning results */
             jit_result = warning_result = JIT_ERROR_OK;
             warning_value = 0;
@@ -2296,9 +1966,6 @@ void thread_down(void) {
                     /* In case of a warning having been raised before, we notify it */
                     jit_result = warning_result;
                 }
-                pthread_mutex_lock(&mx_meas_dw);
-                meas_nb_tx_requested += 1;
-                pthread_mutex_unlock(&mx_meas_dw);
             }
 
             /* Send acknoledge datagram to server */
@@ -2383,15 +2050,9 @@ void thread_jit(void) {
                         result = lgw_send(&pkt);
                         pthread_mutex_unlock(&mx_concent); /* free concentrator ASAP */
                         if (result != LGW_HAL_SUCCESS) {
-                            pthread_mutex_lock(&mx_meas_dw);
-                            meas_nb_tx_fail += 1;
-                            pthread_mutex_unlock(&mx_meas_dw);
                             MSG("WARNING: [jit] lgw_send failed on rf_chain %d\n", i);
                             continue;
                         } else {
-                            pthread_mutex_lock(&mx_meas_dw);
-                            meas_nb_tx_ok += 1;
-                            pthread_mutex_unlock(&mx_meas_dw);
                             MSG_DEBUG(DEBUG_PKT_FWD, "lgw_send done on rf_chain %d: count_us=%u toa_ms=%u\n", i, pkt.count_us, toa_ms);
                         }
                         wait_ms(toa_ms);
