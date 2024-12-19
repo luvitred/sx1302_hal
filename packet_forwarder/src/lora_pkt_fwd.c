@@ -78,7 +78,7 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #define DEFAULT_KEEPALIVE   5           /* default time interval for downstream keep-alive packet */
 #define DEFAULT_STAT        30          /* default time interval for statistics */
 #define PUSH_TIMEOUT_MS     100
-#define PULL_TIMEOUT_MS     200
+#define PULL_TIMEOUT_MS     800
 #define FETCH_SLEEP_MS      10          /* nb of ms waited when a fetch return no packets */
 
 #define PROTOCOL_VERSION    2           /* v1.6 */
