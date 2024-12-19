@@ -34,27 +34,13 @@ License: Revised BSD License, see LICENSE.TXT file include in the project
 #include "loragw_hal.h"
 #include "loragw_aux.h"
 #include "loragw_com.h"
-#if 0
-#include "loragw_i2c.h"
-#include "loragw_lbt.h"
-#endif
 #include "loragw_sx1250.h"
-#if 0
-#include "loragw_sx125x.h"
-#include "loragw_sx1261.h"
-#endif
 #include "loragw_sx1302.h"
 #include "loragw_sx1302_timestamp.h"
-#if 0
-#include "loragw_stts751.h"
-#include "loragw_ad5338r.h"
-#endif
 #include "loragw_debug.h"
 
 /* -------------------------------------------------------------------------- */
 /* --- DEBUG CONSTANTS ------------------------------------------------------ */
-
-#define HAL_DEBUG_FILE_LOG  0
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE MACROS ------------------------------------------------------- */
@@ -112,9 +98,6 @@ const char lgw_version_string[] = "Version: " LIBLORAGW_VERSION ";";
 
 #include "arb_fw.var"           /* text_arb_sx1302_13_Nov_3 */
 #include "agc_fw_sx1250.var"    /* text_agc_sx1250_05_Juillet_2019_3 */
-#if 0
-#include "agc_fw_sx1257.var"    /* text_agc_sx1257_19_Nov_1 */
-#endif
 
 /*
 The following static variable holds the gateway configuration provided by the
@@ -201,15 +184,6 @@ static lgw_context_t lgw_context = {
         .log_file_name = "loragw_hal.log"
     }
 };
-
-/* File handle to write debug logs */
-FILE * log_file = NULL;
-
-/* I2C temperature sensor handles */
-#if 0
-static int     ts_fd = -1;
-static uint8_t ts_addr = 0xFF;
-#endif
 
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DECLARATION ---------------------------------------- */
@@ -618,28 +592,6 @@ int lgw_sx1261_setconf(struct lgw_conf_sx1261_s * conf) {
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 
 int lgw_debug_setconf(struct lgw_conf_debug_s * conf) {
-    int i;
-
-    CHECK_NULL(conf);
-
-    CONTEXT_DEBUG.nb_ref_payload = conf->nb_ref_payload;
-    for (i = 0; i < CONTEXT_DEBUG.nb_ref_payload; i++) {
-        /* Get user configuration */
-        CONTEXT_DEBUG.ref_payload[i].id = conf->ref_payload[i].id;
-
-        /* Initialize global context */
-        CONTEXT_DEBUG.ref_payload[i].prev_cnt = 0;
-        CONTEXT_DEBUG.ref_payload[i].payload[0] = (uint8_t)(CONTEXT_DEBUG.ref_payload[i].id >> 24);
-        CONTEXT_DEBUG.ref_payload[i].payload[1] = (uint8_t)(CONTEXT_DEBUG.ref_payload[i].id >> 16);
-        CONTEXT_DEBUG.ref_payload[i].payload[2] = (uint8_t)(CONTEXT_DEBUG.ref_payload[i].id >> 8);
-        CONTEXT_DEBUG.ref_payload[i].payload[3] = (uint8_t)(CONTEXT_DEBUG.ref_payload[i].id >> 0);
-    }
-
-    if (conf->log_file_name != NULL) {
-        strncpy(CONTEXT_DEBUG.log_file_name, conf->log_file_name, sizeof CONTEXT_DEBUG.log_file_name);
-        CONTEXT_DEBUG.log_file_name[sizeof CONTEXT_DEBUG.log_file_name - 1] = '\0'; /* ensure string termination */
-    }
-
     return LGW_HAL_SUCCESS;
 }
 
@@ -687,12 +639,6 @@ int lgw_start(void) {
                 case LGW_RADIO_TYPE_SX1250:
                     err = sx1250_setup(i, CONTEXT_RF_CHAIN[i].freq_hz, CONTEXT_RF_CHAIN[i].single_input_mode);
                     break;
-#if 0
-                case LGW_RADIO_TYPE_SX1255:
-                case LGW_RADIO_TYPE_SX1257:
-                    err = sx125x_setup(i, CONTEXT_BOARD.clksrc, true, CONTEXT_RF_CHAIN[i].type, CONTEXT_RF_CHAIN[i].freq_hz);
-                    break;
-#endif
                 default:
                     DEBUG_PRINTF("ERROR: RADIO TYPE NOT SUPPORTED (RF_CHAIN %d)\n", i);
                     return LGW_HAL_ERROR;
@@ -812,17 +758,6 @@ int lgw_start(void) {
                 return LGW_HAL_ERROR;
             }
             break;
-#if 0
-        case LGW_RADIO_TYPE_SX1255:
-        case LGW_RADIO_TYPE_SX1257:
-            DEBUG_MSG("Loading AGC fw for sx125x\n");
-            err = sx1302_agc_load_firmware(agc_firmware_sx125x);
-            if (err != LGW_REG_SUCCESS) {
-                printf("ERROR: failed to load AGC firmware for sx125x\n");
-                return LGW_HAL_ERROR;
-            }
-            break;
-#endif
         default:
             break;
     }
@@ -859,124 +794,8 @@ int lgw_start(void) {
         return LGW_HAL_ERROR;
     }
 
-    /* For debug logging */
-#if HAL_DEBUG_FILE_LOG
-    char timestamp_str[40];
-    struct tm *timenow;
-
-    /* Append current time to log file name */
-    time_t now = time(NULL);
-    timenow = gmtime(&now);
-    strftime(timestamp_str, sizeof(timestamp_str), ".%Y-%m-%d_%H%M%S", timenow);
-    strncat(CONTEXT_DEBUG.log_file_name, timestamp_str, sizeof CONTEXT_DEBUG.log_file_name);
-
-    /* Open the file for writting */
-    log_file = fopen(CONTEXT_DEBUG.log_file_name, "w+"); /* create log file, overwrite if file already exist */
-    if (log_file == NULL) {
-        printf("ERROR: impossible to create log file %s\n", CONTEXT_DEBUG.log_file_name);
-        return LGW_HAL_ERROR;
-    } else {
-        printf("INFO: %s file opened for debug log\n", CONTEXT_DEBUG.log_file_name);
-
-        /* Create "pktlog.csv" symlink to simplify user life */
-        unlink("loragw_hal.log");
-        i = symlink(CONTEXT_DEBUG.log_file_name, "loragw_hal.log");
-        if (i < 0) {
-            printf("ERROR: impossible to create symlink to log file %s\n", CONTEXT_DEBUG.log_file_name);
-        }
-    }
-#endif
-
     /* Configure the pseudo-random generator (For Debug) */
     dbg_init_random();
-
-#if 0
-    if (CONTEXT_COM_TYPE == LGW_COM_SPI) {
-        /* Find the temperature sensor on the known supported ports */
-        for (i = 0; i < (int)(sizeof I2C_PORT_TEMP_SENSOR); i++) {
-            ts_addr = I2C_PORT_TEMP_SENSOR[i];
-            err = i2c_linuxdev_open(I2C_DEVICE, ts_addr, &ts_fd);
-            if (err != LGW_I2C_SUCCESS) {
-                printf("ERROR: failed to open I2C for temperature sensor on port 0x%02X\n", ts_addr);
-                return LGW_HAL_ERROR;
-            }
-
-            err = stts751_configure(ts_fd, ts_addr);
-            if (err != LGW_I2C_SUCCESS) {
-                printf("INFO: no temeprature sensor found on port 0x%02X\n", ts_addr);
-                i2c_linuxdev_close(ts_fd);
-                ts_fd = -1;
-            } else {
-                printf("INFO: found temperature sensor on port 0x%02X\n", ts_addr);
-                break;
-            }
-        }
-        if (i == sizeof I2C_PORT_TEMP_SENSOR) {
-            printf("ERROR: no temeprature sensor found.\n");
-            return LGW_HAL_ERROR;
-        }
-
-        /* Configure ADC AD338R for full duplex (CN490 reference design) */
-        if (CONTEXT_BOARD.full_duplex == true) {
-            err = i2c_linuxdev_open(I2C_DEVICE, I2C_PORT_DAC_AD5338R, &ad_fd);
-            if (err != LGW_I2C_SUCCESS) {
-                printf("ERROR: failed to open I2C for ad5338r\n");
-                return LGW_HAL_ERROR;
-            }
-
-            err = ad5338r_configure(ad_fd, I2C_PORT_DAC_AD5338R);
-            if (err != LGW_I2C_SUCCESS) {
-                printf("ERROR: failed to configure ad5338r\n");
-                i2c_linuxdev_close(ad_fd);
-                ad_fd = -1;
-                return LGW_HAL_ERROR;
-            }
-
-            /* Turn off the PA: set DAC output to 0V */
-            uint8_t volt_val[AD5338R_CMD_SIZE] = { 0x39, (uint8_t)VOLTAGE2HEX_H(0), (uint8_t)VOLTAGE2HEX_L(0) };
-            err = ad5338r_write(ad_fd, I2C_PORT_DAC_AD5338R, volt_val);
-            if (err != LGW_I2C_SUCCESS) {
-                printf("ERROR: AD5338R: failed to set DAC output to 0V\n");
-                return LGW_HAL_ERROR;
-            }
-            printf("INFO: AD5338R: Set DAC output to 0x%02X 0x%02X\n", (uint8_t)VOLTAGE2HEX_H(0), (uint8_t)VOLTAGE2HEX_L(0));
-        }
-    }
-
-    /* Connect to the external sx1261 for LBT or Spectral Scan */
-    if (CONTEXT_SX1261.enable == true) {
-        err = sx1261_connect(CONTEXT_COM_TYPE, (CONTEXT_COM_TYPE == LGW_COM_SPI) ? CONTEXT_SX1261.spi_path : NULL);
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: failed to connect to the sx1261 radio (LBT/Spectral Scan)\n");
-            return LGW_HAL_ERROR;
-        }
-
-        err = sx1261_load_pram();
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: failed to patch sx1261 radio for LBT/Spectral Scan\n");
-            return LGW_HAL_ERROR;
-        }
-
-        err = sx1261_calibrate(CONTEXT_RF_CHAIN[0].freq_hz);
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: failed to calibrate sx1261 radio\n");
-            return LGW_HAL_ERROR;
-        }
-
-        err = sx1261_setup();
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: failed to setup sx1261 radio\n");
-            return LGW_HAL_ERROR;
-        }
-    }
-
-    /* Set CONFIG_DONE GPIO to 1 (turn on the corresponding LED) */
-    err = sx1302_set_gpio(0x01);
-    if (err != LGW_REG_SUCCESS) {
-        printf("ERROR: failed to set CONFIG_DONE GPIO\n");
-        return LGW_HAL_ERROR;
-    }
-#endif
 
     /* set hal state */
     CONTEXT_STARTED = true;
@@ -1004,38 +823,12 @@ int lgw_stop(void) {
         }
     }
 
-    /* Close log file */
-    if (log_file != NULL) {
-        fclose(log_file);
-        log_file = NULL;
-    }
-
     DEBUG_MSG("INFO: Disconnecting\n");
     x = lgw_disconnect();
     if (x != LGW_HAL_SUCCESS) {
         printf("ERROR: failed to disconnect concentrator\n");
         err = LGW_HAL_ERROR;
     }
-
-    #if 0
-    if (CONTEXT_COM_TYPE == LGW_COM_SPI) {
-        DEBUG_MSG("INFO: Closing I2C for temperature sensor\n");
-        x = i2c_linuxdev_close(ts_fd);
-        if (x != 0) {
-            printf("ERROR: failed to close I2C temperature sensor device (err=%i)\n", x);
-            err = LGW_HAL_ERROR;
-        }
-
-        if (CONTEXT_BOARD.full_duplex == true) {
-            DEBUG_MSG("INFO: Closing I2C for AD5338R\n");
-            x = i2c_linuxdev_close(ad_fd);
-            if (x != 0) {
-                printf("ERROR: failed to close I2C AD5338R device (err=%i)\n", x);
-                err = LGW_HAL_ERROR;
-            }
-        }
-    }
-    #endif
 
     CONTEXT_STARTED = false;
     return err;
@@ -1048,9 +841,6 @@ int lgw_receive(uint8_t max_pkt, struct lgw_pkt_rx_s *pkt_data) {
     uint8_t nb_pkt_fetched = 0;
     uint8_t nb_pkt_found = 0;
     uint8_t nb_pkt_left = 0;
-    #if 0
-    float current_temperature = 0.0, rssi_temperature_offset = 0.0;
-    #endif
 
     /* Get packets from SX1302, if any */
     res = sx1302_fetch(&nb_pkt_fetched);
@@ -1075,15 +865,6 @@ int lgw_receive(uint8_t max_pkt, struct lgw_pkt_rx_s *pkt_data) {
         printf("WARNING: not enough space allocated, fetched %d packet(s), %d will be left in RX buffer\n", nb_pkt_fetched, nb_pkt_left);
     }
 
-    /* Apply RSSI temperature compensation */
-    #if 0
-    res = lgw_get_temperature(&current_temperature);
-    if (res != LGW_I2C_SUCCESS) {
-        printf("ERROR: failed to get current temperature\n");
-        return LGW_HAL_ERROR;
-    }
-    #endif
-
     /* Iterate on the RX buffer to get parsed packets */
     for (nb_pkt_found = 0; nb_pkt_found < ((nb_pkt_fetched <= max_pkt) ? nb_pkt_fetched : max_pkt); nb_pkt_found++) {
         /* Get packet and move to next one */
@@ -1099,12 +880,6 @@ int lgw_receive(uint8_t max_pkt, struct lgw_pkt_rx_s *pkt_data) {
         /* Appli RSSI offset calibrated for the board */
         pkt_data[nb_pkt_found].rssic += CONTEXT_RF_CHAIN[pkt_data[nb_pkt_found].rf_chain].rssi_offset;
         pkt_data[nb_pkt_found].rssis += CONTEXT_RF_CHAIN[pkt_data[nb_pkt_found].rf_chain].rssi_offset;
-        #if 0
-        rssi_temperature_offset = sx1302_rssi_get_temperature_offset(&CONTEXT_RF_CHAIN[pkt_data[nb_pkt_found].rf_chain].rssi_tcomp, current_temperature);
-        pkt_data[nb_pkt_found].rssic += rssi_temperature_offset;
-        pkt_data[nb_pkt_found].rssis += rssi_temperature_offset;
-        DEBUG_PRINTF("INFO: RSSI temperature offset applied: %.3f dB (current temperature %.1f C)\n", rssi_temperature_offset, current_temperature);
-        #endif
     }
 
     DEBUG_PRINTF("INFO: nb pkt found:%u left:%u\n", nb_pkt_found, nb_pkt_left);
@@ -1257,29 +1032,6 @@ int lgw_get_eui(uint64_t* eui) {
     }
     return LGW_HAL_SUCCESS;
 }
-
-/* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
-#if 0
-int lgw_get_temperature(float* temperature) {
-    int err = LGW_HAL_ERROR;
-
-    CHECK_NULL(temperature);
-
-    switch (CONTEXT_COM_TYPE) {
-        case LGW_COM_SPI:
-            err = stts751_get_temperature(ts_fd, ts_addr, temperature);
-            break;
-        case LGW_COM_USB:
-            err = lgw_com_get_temperature(temperature);
-            break;
-        default:
-            printf("ERROR(%s:%d): wrong communication type (SHOULD NOT HAPPEN)\n", __FUNCTION__, __LINE__);
-            break;
-    }
-
-    return err;
-}
-#endif
 
 /* ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ */
 

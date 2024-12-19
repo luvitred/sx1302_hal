@@ -156,9 +156,6 @@ void lora_crc16(const char data, int *crc);
 /* -------------------------------------------------------------------------- */
 /* --- INTERNAL SHARED VARIABLES -------------------------------------------- */
 
-/* Log file */
-extern FILE * log_file;
-
 /* -------------------------------------------------------------------------- */
 /* --- PRIVATE FUNCTIONS DEFINITION ----------------------------------------- */
 
@@ -530,26 +527,7 @@ int sx1302_radio_calibrate(struct lgw_conf_rxrf_s * context_rf_chain, uint8_t cl
     err |= lgw_reg_w(SX1302_REG_AGC_MCU_RF_EN_A_PA_EN, 0);
     err |= lgw_reg_w(SX1302_REG_AGC_MCU_RF_EN_A_LNA_EN, 0);
     /* -- Start calibration */
-    if ((context_rf_chain[clksrc].type == LGW_RADIO_TYPE_SX1257) ||
-        (context_rf_chain[clksrc].type == LGW_RADIO_TYPE_SX1255)) {
-        #if 1
-        (void)txgain_lut;
-        #else
-        DEBUG_MSG("Loading CAL fw for sx125x\n");
-        err = sx1302_agc_load_firmware(cal_firmware_sx125x);
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: Failed to load calibration fw\n");
-            return LGW_REG_ERROR;
-        }
-        err = sx1302_cal_start(FW_VERSION_CAL, context_rf_chain, txgain_lut);
-        if (err != LGW_REG_SUCCESS) {
-            printf("ERROR: radio calibration failed\n");
-            sx1302_radio_reset(0, context_rf_chain[0].type);
-            sx1302_radio_reset(1, context_rf_chain[1].type);
-            return LGW_REG_ERROR;
-        }
-        #endif
-    } else {
+   {
         DEBUG_MSG("Calibrating sx1250 radios\n");
         for (i = 0; i < LGW_RF_CHAIN_NB; i++) {
             if (context_rf_chain[i].enable == true) {
@@ -1963,10 +1941,6 @@ int sx1302_parse(lgw_context_t * context, struct lgw_pkt_rx_s * p) {
                     payload_crc16_calc = sx1302_lora_payload_crc(p->payload, p->size);
                     if (payload_crc16_calc != pkt.rx_crc16_value) {
                         printf("ERROR: Payload CRC16 check failed (got:0x%04X calc:0x%04X)\n", pkt.rx_crc16_value, payload_crc16_calc);
-                        if (log_file != NULL) {
-                            fprintf(log_file, "ERROR: Payload CRC16 check failed (got:0x%04X calc:0x%04X)\n", pkt.rx_crc16_value, payload_crc16_calc);
-                            dbg_log_buffer_to_file(log_file, rx_buffer.buffer, rx_buffer.buffer_size);
-                        }
                         return LGW_REG_ERROR;
                     } else {
                         DEBUG_PRINTF("Payload CRC check OK (0x%04X)\n", pkt.rx_crc16_value);
@@ -1977,35 +1951,6 @@ int sx1302_parse(lgw_context_t * context, struct lgw_pkt_rx_s * p) {
             /* CRC disabled */
             p->status = STAT_NO_CRC;
         }
-
-#if 0
-        int i;
-        /* FOR DEBUG: Check data integrity for known devices (debug context) */
-        if (p->status == STAT_CRC_OK || p->status == STAT_NO_CRC) {
-            /*  We compare the received payload with predefined ones to ensure that the payload content is what we expect.
-                4 bytes: ID to identify the payload
-                4 bytes: packet counter used to initialize the seed for pseudo-random generation
-                x bytes: pseudo-random payload
-            */
-            int res;
-            for (i = 0; i < context->debug_cfg.nb_ref_payload; i++) {
-                res = dbg_check_payload(&(context->debug_cfg), log_file, p->payload, p->size, i, pkt.rx_rate_sf);
-                if (res == -1) {
-                    printf("ERROR: 0x%08X payload error\n", context->debug_cfg.ref_payload[i].id);
-                    if (log_file != NULL) {
-                        fprintf(log_file, "ERROR: 0x%08X payload error\n", context->debug_cfg.ref_payload[i].id);
-                        dbg_log_buffer_to_file(log_file, rx_buffer.buffer, rx_buffer.buffer_size);
-                        dbg_log_payload_diff_to_file(log_file, p->payload, context->debug_cfg.ref_payload[i].payload, p->size);
-                    }
-                    return LGW_REG_ERROR;
-                } else if (res == 1) {
-                    DEBUG_PRINTF("0x%08X payload matches\n", context->debug_cfg.ref_payload[i].id);
-                } else {
-                    /* Do nothing */
-                }
-            }
-        }
-#endif
 
         /* Get SNR - converted from 0.25dB step to dB */
         p->snr = (float)(pkt.snr_average) / 4;
