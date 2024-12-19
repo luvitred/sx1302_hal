@@ -2028,17 +2028,17 @@ void thread_jit(void) {
                         /* check if concentrator is free for sending new packet */
                         pthread_mutex_lock(&mx_concent); /* may have to wait for a fetch to finish */
                         result = lgw_status(pkt.rf_chain, TX_STATUS, &tx_status);
-                        pthread_mutex_unlock(&mx_concent); /* free concentrator ASAP */
                         if (result == LGW_HAL_ERROR) {
                             MSG("WARNING: [jit%d] lgw_status failed\n", i);
+                            pthread_mutex_unlock(&mx_concent);
+                            continue;
                         } else {
                             if (tx_status == TX_EMITTING) {
                                 MSG("ERROR: concentrator is currently emitting on rf_chain %d\n", i);
-                                print_tx_status(tx_status);
+                                pthread_mutex_unlock(&mx_concent);
                                 continue;
                             } else if (tx_status == TX_SCHEDULED) {
                                 MSG("WARNING: a downlink was already scheduled on rf_chain %d, overwritting it...\n", i);
-                                print_tx_status(tx_status);
                             } else {
                                 /* Nothing to do */
                             }
@@ -2046,9 +2046,9 @@ void thread_jit(void) {
 
                         toa_ms = lgw_time_on_air(&pkt);
                         /* send packet to concentrator */
-                        pthread_mutex_lock(&mx_concent); /* may have to wait for a fetch to finish */
                         result = lgw_send(&pkt);
                         pthread_mutex_unlock(&mx_concent); /* free concentrator ASAP */
+
                         if (result != LGW_HAL_SUCCESS) {
                             MSG("WARNING: [jit] lgw_send failed on rf_chain %d\n", i);
                             continue;
