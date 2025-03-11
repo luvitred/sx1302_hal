@@ -132,6 +132,7 @@ int sx1250_spi_r_ext(void *com_target, uint8_t spi_mux_target, sx1250_op_code_t 
     size_to_do = size;
 
     /* I/O transaction */
+    memset(in_buf, 0, ARRAY_SIZE(in_buf));
     memset(&k, 0, sizeof(k)); /* clear k */
     k[0].tx_buf = (unsigned long) out_buf;
     k[0].len = command_size;

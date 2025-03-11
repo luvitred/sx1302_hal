@@ -271,7 +271,7 @@ int lgw_gps_enable(char *tty_path, char *gps_family, speed_t target_brate, int *
 
     /* open TTY device */
     gps_tty_dev = open(tty_path, O_RDWR | O_NOCTTY);
-    if (gps_tty_dev <= 0) {
+    if (gps_tty_dev < 0) {
         DEBUG_MSG("ERROR: TTY PORT FAIL TO OPEN, CHECK PATH AND ACCESS RIGHTS\n");
         return LGW_GPS_ERROR;
     }
